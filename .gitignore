@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+.venv/
+
+# Secrets / credentials
+.env
+
+# Tool data & outputs — NEVER commit client scan data
+data/*
+reports/*
+!data/.gitkeep
+!reports/.gitkeep
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
