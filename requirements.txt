@@ -1,1 +1,10 @@
 rich
+# Phase 1 (discovery) uses only the Python standard library — no packages needed.
+# External requirement: install the `nmap` binary separately (https://nmap.org/download.html).
+#
+# Uncomment as we reach each phase:
+# pywinrm      # Phase 2 — Windows credentialed collection
+# paramiko     # Phase 2 — Linux SSH collection
+# requests     # Phase 3 — NVD + endoflife.date APIs
+# openpyxl     # Phase 4 — Excel reports
+# reportlab    # Phase 4 — PDF reports
