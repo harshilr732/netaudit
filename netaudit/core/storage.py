@@ -11,12 +11,19 @@ Data model (one row per scan run keeps full history so you can show trends later
       └─ hosts        one row per machine seen in that scan   (scan_id FK)
            ├─ services   one row per open port on that host   (host_id FK)
            └─ findings   one row per security observation      (host_id FK)
+
+Phase 2 note: the credentialed read (real OS, patches, AV) is stored as a JSON
+blob on the host row — same pattern you already use for service.cpe and
+finding.references. The security-relevant parts (AV disabled, etc.) are also
+emitted as normal Finding rows by the orchestrator, so they report through the
+existing pipeline; the blob preserves the full detail for inventory/reporting.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 
 from netaudit.core.models import Finding, Host, Scan, Service, Severity, Confidence
@@ -31,16 +38,17 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 
 CREATE TABLE IF NOT EXISTS hosts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id     INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
-    ip          TEXT NOT NULL,
-    hostname    TEXT,
-    state       TEXT,
-    mac         TEXT,
-    vendor      TEXT,
-    os_name     TEXT,
-    os_accuracy INTEGER,
-    last_seen   TEXT
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id      INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    ip           TEXT NOT NULL,
+    hostname     TEXT,
+    state        TEXT,
+    mac          TEXT,
+    vendor       TEXT,
+    os_name      TEXT,
+    os_accuracy  INTEGER,
+    last_seen    TEXT,
+    credentialed TEXT   -- JSON blob of CredentialedData (Phase 2), NULL if none
 );
 
 CREATE TABLE IF NOT EXISTS services (
@@ -86,7 +94,17 @@ class Database:
 
     def init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Lightweight migrations for DBs created before a column existed.
+        CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so we
+        add them here. Safe to run every startup."""
+        host_cols = {row["name"]
+                     for row in self.conn.execute("PRAGMA table_info(hosts)")}
+        if "credentialed" not in host_cols:
+            self.conn.execute("ALTER TABLE hosts ADD COLUMN credentialed TEXT")
 
     def save_scan(self, scan: Scan) -> int:
         """Persist a whole Scan (with its hosts, services, findings). Returns scan_id."""
@@ -102,10 +120,11 @@ class Database:
 
     def _save_host(self, scan_id: int, host: Host) -> int:
         cur = self.conn.execute(
-            """INSERT INTO hosts (scan_id, ip, hostname, state, mac, vendor, os_name, os_accuracy, last_seen)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO hosts (scan_id, ip, hostname, state, mac, vendor, os_name, os_accuracy, last_seen, credentialed)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (scan_id, host.ip, host.hostname, host.state, host.mac, host.vendor,
-             host.os_name, host.os_accuracy, host.last_seen),
+             host.os_name, host.os_accuracy, host.last_seen,
+             _credentialed_json(host)),
         )
         host_id = cur.lastrowid
         for svc in host.services:
@@ -126,3 +145,11 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+
+def _credentialed_json(host: Host) -> str | None:
+    """Serialize CredentialedData to JSON. default=str handles the datetime
+    (collected_at); the str-based enums serialize to their values directly."""
+    if getattr(host, "credentialed", None) is None:
+        return None
+    return json.dumps(asdict(host.credentialed), default=str)

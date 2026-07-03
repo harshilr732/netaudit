@@ -29,3 +29,5 @@ reports/*.json
 reports/*.csv
 *.log
 out/
+credentials.json
+   *.db

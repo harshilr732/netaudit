@@ -96,7 +96,7 @@ class Host:
     services: list[Service] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     last_seen: str = field(default_factory=_now_iso)
-
+    credentialed: Optional[CredentialedData] = None
     def to_dict(self) -> dict:
         return {
             "ip": self.ip,
@@ -129,3 +129,56 @@ class Scan:
             "nmap_version": self.nmap_version,
             "hosts": [h.to_dict() for h in self.hosts],
         }
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+
+class CollectionStatus(str, Enum):
+    SUCCESS       = "success"
+    UNREACHABLE   = "unreachable"    # no path / port closed / timeout
+    AUTH_FAILED   = "auth_failed"    # reached host, credentials rejected
+    NOT_SUPPORTED = "not_supported"  # WinRM/SSH disabled on target
+    ERROR         = "error"          # unexpected; see .message
+
+
+@dataclass
+class OSInfo:
+    family: str                       # "windows" | "linux"
+    product: str = ""                 # "Windows Server 2016 Standard" / "Ubuntu"
+    version: str = ""                 # "10.0.14393" / "20.04"
+    build: str = ""                   # "14393" / kernel "5.4.0-91-generic"
+    architecture: str = ""
+
+
+@dataclass
+class Patch:
+    identifier: str                   # HotFixID (KB…) or update id
+    installed_on: Optional[str] = None  # raw string; parse in Phase 3
+
+
+@dataclass
+class AVProduct:
+    name: str
+    enabled: Optional[bool] = None       # real-time protection on?
+    up_to_date: Optional[bool] = None    # signatures current?
+    raw_state: Optional[int] = None      # SecurityCenter2 productState, for audit
+
+
+@dataclass
+class InstalledPackage:
+    name: str
+    version: str
+
+
+@dataclass
+class CredentialedData:
+    """Result of one logged-in read of a single host."""
+    status: CollectionStatus
+    collected_at: datetime = field(default_factory=datetime.utcnow)
+    message: str = ""                             # detail when status != SUCCESS
+    os: Optional[OSInfo] = None
+    patches: list[Patch] = field(default_factory=list)
+    av_products: list[AVProduct] = field(default_factory=list)
+    packages: list[InstalledPackage] = field(default_factory=list)

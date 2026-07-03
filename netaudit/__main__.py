@@ -3,11 +3,12 @@ __main__.py — the command-line entry point that ties Phase 1 together.
 
 Run it with:   python -m netaudit scan --targets 127.0.0.1 --out out/
 
-Flow:  parse args -> NmapScanner.scan() -> build a Scan object -> save to SQLite
-       -> export JSON + CSV -> print a human summary.
+Flow:  parse args -> NmapScanner.scan() -> build a Scan object
+       -> (optional) Nuclei -> (optional) credentialed collection
+       -> save to SQLite -> export JSON + CSV -> print a human summary.
 
 Everything here is orchestration only. The real work lives in the scanners/,
-core/, and reporting/ modules so each piece stays testable on its own.
+collectors/, core/, and reporting/ modules so each piece stays testable on its own.
 """
 
 from __future__ import annotations
@@ -31,10 +32,10 @@ def _cmd_scan(args: argparse.Namespace) -> int:
           f"{' + OS detection' if args.os else ''}"
           f"{' + default NSE scripts' if args.scripts else ''}"
           f"{' + NSE vuln scripts' if args.vuln else ''}"
-          f"{' + Nuclei' if args.nuclei else ''}")
+          f"{' + Nuclei' if args.nuclei else ''}"
+          f"{' + credentialed' if args.credentialed else ''}")
 
     scan = Scan(targets=args.targets)
-
     try:
         scanner = NmapScanner(timeout=args.timeout)
         hosts, nmap_version = scanner.scan(
@@ -72,6 +73,25 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                 print(f"[*] Nuclei: {attached} finding(s).")
             except NucleiError as e:
                 print(f"[!] Nuclei skipped: {e}", file=sys.stderr)
+
+    # Optional: Phase 2 credentialed collection (WinRM / SSH).
+    # Logs into AUTHORIZED hosts read-only for real OS / patch / AV data, merges
+    # it onto each Host, and appends confirmed findings.
+    if args.credentialed:
+        from netaudit.core.credentials import load_store_from_config
+        from netaudit.collectors.orchestrator import enrich_scan
+        try:
+            store = load_store_from_config(args.credentials)
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"[!] Credentialed collection skipped: {e}", file=sys.stderr)
+        else:
+            print(f"[*] Credentialed: collecting from {len(scan.hosts)} host(s)...")
+            enrich_scan(scan, store)
+            ok = sum(1 for h in scan.hosts
+                     if h.credentialed and h.credentialed.status.value == "success")
+            skipped = len(scan.hosts) - ok
+            print(f"[*] Credentialed: {ok} collected, {skipped} not collected "
+                  f"(no credential / unreachable / auth failed).")
 
     scan.finished_at = datetime.now(timezone.utc).isoformat()
 
@@ -124,7 +144,7 @@ def _print_summary_plain(scan: Scan, scan_id, json_path, csv_path, db_path) -> N
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="netaudit",
-        description="Read-only network asset discovery & auditing tool (Phase 1: discovery).",
+        description="Read-only network asset discovery & auditing tool.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -139,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Run nmap's NSE vulnerability scripts (safe subset only — no DoS/intrusive).")
     scan.add_argument("--nuclei", action="store_true",
                       help="Run Nuclei against discovered web endpoints (DoS/fuzz templates excluded).")
+    scan.add_argument("--credentialed", action="store_true",
+                      help="Log into authorized hosts (WinRM/SSH) for real OS/patch/AV data. "
+                           "Requires a credentials config (see --credentials).")
+    scan.add_argument("--credentials", default="credentials.json",
+                      help="Path to the credentials config for --credentialed. Default: credentials.json")
     scan.add_argument("--discovery-only", action="store_true", help="Ping scan only (who's up), no port scan.")
     scan.add_argument("--db", default="netaudit.db", help="SQLite database path. Default: netaudit.db")
     scan.add_argument("--out", default="out", help="Directory for JSON/CSV output. Default: out/")
